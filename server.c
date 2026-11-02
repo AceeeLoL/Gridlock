@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <time.h>
 
 #define BOARD_SIZE 15
 
@@ -39,6 +40,22 @@ void init_game(GameState *game) {
 
     game->grid[game->p1.pos.x][game->p1.pos.y] = CELL_P1;
     game->grid[game->p2.pos.x][game->p2.pos.y] = CELL_P2;
+}
+
+/* Randomly place a specific number of obstacles on empty cells */
+void generate_obstacles(GameState *game, int num_obstacles) {
+    srand(time(NULL)); 
+    
+    int placed = 0;
+    while (placed < num_obstacles) {
+        int rx = rand() % BOARD_SIZE;
+        int ry = rand() % BOARD_SIZE;
+        
+        if (game->grid[rx][ry] == CELL_EMPTY) {
+            game->grid[rx][ry] = CELL_OBSTACLE;
+            placed++;
+        }
+    }
 }
 
 /* Print the current board state to stdout for debugging */
@@ -86,9 +103,12 @@ bool move_player(GameState *game, Player *p, char dir) {
 int main(void) {
     GameState game;
     init_game(&game);
+    
+    // Generate 10 random obstacles
+    generate_obstacles(&game, 10); 
+    
     print_board(&game);
     
-    // TODO: Add obstacle generation
     // TODO: Implement special actions (Sprint, Jump, Bomb)
     // TODO: Add TCP socket server networking
     // TODO: Implement turn loop & win/draw condition checks
