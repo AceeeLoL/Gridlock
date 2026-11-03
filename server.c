@@ -2,10 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <time.h>
+#include <unistd.h>
+#include <errno.h>
+#include <signal.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
 
 #define BOARD_SIZE 15
-
+#define PORT 8080
 #define CELL_EMPTY '.'
 #define CELL_WALL '#'
 #define CELL_OBSTACLE 'X'
@@ -28,6 +32,35 @@ typedef struct {
     Player p2;
     int current_cycle;
 } GameState;
+
+/* Send all bytes, even if send() writes only part of the message. */
+static bool send_all(int fd, const char *message) {
+    size_t total = strlen(message), sent = 0;
+    while (sent < total) {
+        ssize_t n = send(fd, message + sent, total - sent, 0);
+        if (n <= 0) return false;
+        sent += (size_t)n;
+    }
+    return true;
+}
+
+/* Receive one newline-terminated command from a client. */
+static int receive_line(int fd, char *buffer, size_t size) {
+    size_t used = 0;
+    while (used + 1 < size) {
+        char ch;
+        ssize_t n = recv(fd, &ch, 1, 0);
+        if (n == 0) return 0;          /* client disconnected */
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        if (ch == '\n') break;
+        if (ch != '\r') buffer[used++] = ch;
+    }
+    buffer[used] = '\0';
+    return 1;
+}
 
 /* Initialize the board grid, player start positions, and empty state */
 void init_game(GameState *game) {
@@ -99,19 +132,115 @@ bool move_player(GameState *game, Player *p, char dir) {
     game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1 : CELL_P2;
     return true;
 }
+    
+static void make_board_message(const GameState *game, char *out, size_t size) {
+    size_t used = 0;
+    int n = snprintf(out, size,
+        "\n--- GRIDLOCK (Cycle %d) ---\nP1 Points: %d | P2 Points: %d\n\n  ",
+        game->current_cycle, game->p1.points, game->p2.points);
+    if (n < 0 || (size_t)n >= size) { out[0] = '\0'; return; }
+    used = (size_t)n;
 
-int main(void) {
+    for (int j = 0; j < BOARD_SIZE && used < size; j++) {
+        n = snprintf(out + used, size - used, "%d ", j % 10);
+        if (n < 0 || (size_t)n >= size - used) return;
+        used += (size_t)n;
+    }
+    n = snprintf(out + used, size - used, "\n");
+    if (n < 0 || (size_t)n >= size - used) return;
+    used += (size_t)n;
+
+    for (int i = 0; i < BOARD_SIZE && used < size; i++) {
+        n = snprintf(out + used, size - used, "%d ", i % 10);
+        if (n < 0 || (size_t)n >= size - used) return;
+        used += (size_t)n;
+        for (int j = 0; j < BOARD_SIZE; j++) {
+            n = snprintf(out + used, size - used, "%c ", game->grid[i][j]);
+            if (n < 0 || (size_t)n >= size - used) return;
+            used += (size_t)n;
+        }
+        n = snprintf(out + used, size - used, "\n");
+        if (n < 0 || (size_t)n >= size - used) return;
+        used += (size_t)n;
+    }
+}
+
+
+iint main(void) {
+    signal(SIGPIPE, SIG_IGN);
+
+    /* create, bind, and listen on the TCP server socket. */
+    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_fd < 0) { perror("socket"); return EXIT_FAILURE; }
+
+    int option = 1;
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &option, sizeof(option));
+    struct sockaddr_in address = {0};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
+        perror("bind"); close(server_fd); return EXIT_FAILURE;
+    }
+    if (listen(server_fd, 2) < 0) {
+        perror("listen"); close(server_fd); return EXIT_FAILURE;
+    }
+
+    printf("Gridlock server listening on port %d. Waiting for two players...\n", PORT);
+    int clients[2];
+    for (int i = 0; i < 2; i++) {
+        clients[i] = accept(server_fd, NULL, NULL);
+        if (clients[i] < 0) {
+            perror("accept");
+            for (int j = 0; j < i; j++) close(clients[j]);
+            close(server_fd); return EXIT_FAILURE;
+        }
+        printf("Player %d connected.\n", i + 1);
+    }
+
     GameState game;
-    init_game(&game);
-    
-    // Generate 10 random obstacles
-    generate_obstacles(&game, 10); 
-    
-    print_board(&game);
-    
-    // TODO: Implement special actions (Sprint, Jump, Bomb)
-    // TODO: Add TCP socket server networking
-    // TODO: Implement turn loop & win/draw condition checks
+    init_game(&game); /* Server owns the game state. */
+    send_all(clients[0], "START:1\nGame started. You are Player 1.\n");
+    send_all(clients[1], "START:2\nGame started. You are Player 2.\n");
 
+    int active = 0;
+    char board_message[2048];
+    char command[128];
+    bool running = true;
+
+    /* send board + INPUT prompt, receive command, and update turns. */
+    while (running) {
+        Player *player = (active == 0) ? &game.p1 : &game.p2;
+        make_board_message(&game, board_message, sizeof(board_message));
+        send_all(clients[0], board_message);
+        send_all(clients[1], board_message);
+
+        send_all(clients[active], "Your turn. Enter: 0 W/A/S/D\nINPUT\n");
+        send_all(clients[1 - active], "WAIT:Opponent's turn...\n");
+
+        int received = receive_line(clients[active], command, sizeof(command));
+        if (received <= 0) {
+            printf("Player %d disconnected.\n", player->id);
+            send_all(clients[1 - active], "OVER:Opponent disconnected.\n");
+            break;
+        }
+
+        int action = -1;
+        char direction = '\0';
+        if (sscanf(command, "%d %c", &action, &direction) != 2 || action != 0 ||
+            !move_player(&game, player, direction)) {
+            send_all(clients[active], "Invalid move. Use action 0 and W/A/S/D.\n");
+            continue; /* same player retries */
+        }
+
+        active = 1 - active;
+        game.current_cycle++;
+        print_board(&game);
+    }
+
+    for (int i = 0; i < 2; i++) close(clients[i]);
+    close(server_fd);
     return 0;
+}
 }
