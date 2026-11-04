@@ -81,16 +81,25 @@ void init_game(GameState *game) {
     game->grid[game->p2.pos.x][game->p2.pos.y] = CELL_P2;
 }
 
-/* Randomly place a specific number of obstacles on empty cells */
+/* Randomly place a specific number of obstacles on empty cells.
+ * Obstacles are placed in mirrored pairs (left half <-> right half) so both
+ * sides of the board are fair, and never inside the 3x3 safe area of a start. */
 void generate_obstacles(GameState *game, int num_obstacles) {
     srand(time(NULL));
     int placed = 0;
-    while (placed < num_obstacles) {
+    while (placed + 1 < num_obstacles) {          /* each pass places 2 obstacles */
         int rx = rand() % BOARD_SIZE;
-        int ry = rand() % BOARD_SIZE;
-        if (game->grid[rx][ry] == CELL_EMPTY) {
+        int ry = rand() % (BOARD_SIZE / 2);       /* left half only (columns 0-6) */
+        int mx = rx;
+        int my = BOARD_SIZE - 1 - ry;             /* mirrored cell on the right half */
+
+        /* P2's safe area is the mirror of P1's, so checking P1 covers both */
+        if (abs(rx - game->p1.pos.x) <= 1 && abs(ry - game->p1.pos.y) <= 1) continue;
+
+        if (game->grid[rx][ry] == CELL_EMPTY && game->grid[mx][my] == CELL_EMPTY) {
             game->grid[rx][ry] = CELL_OBSTACLE;
-            placed++;
+            game->grid[mx][my] = CELL_OBSTACLE;
+            placed += 2;
         }
     }
 }
@@ -306,7 +315,7 @@ int main(int argc, char *argv[]) {
 
     GameState game;
     init_game(&game);
-    generate_obstacles(&game, 20);
+    generate_obstacles(&game, 12);
     send_all(clients[0], "START:1\nGame started. You are Player 1.\n");
     send_all(clients[1], "START:2\nGame started. You are Player 2.\n");
 
