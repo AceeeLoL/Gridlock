@@ -7,9 +7,9 @@
 #include <signal.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <time.h>
 
 #define BOARD_SIZE 15
-#define PORT 8080
 #define CELL_EMPTY '.'
 #define CELL_WALL '#'
 #define CELL_OBSTACLE 'X'
@@ -166,7 +166,22 @@ static void make_board_message(const GameState *game, char *out, size_t size) {
 }
 
 
-iint main(void) {
+int main(int argc, char *argv[]) {
+    
+    // Check if port number was provided
+    if (argc < 2) {
+        printf("Usage: %s port_no\n", argv[0]);
+        return EXIT_FAILURE;
+    }
+
+    // Get port number from command-line argument
+    int port_no = atoi(argv[1]);
+
+    if (port_no < 1 || port_no > 65535) {
+        printf("Invalid port number.\n");
+        return EXIT_FAILURE;
+    }
+
     signal(SIGPIPE, SIG_IGN);
 
     /* create, bind, and listen on the TCP server socket. */
@@ -178,7 +193,7 @@ iint main(void) {
     struct sockaddr_in address = {0};
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
+    address.sin_port = htons(port_no);
 
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
         perror("bind"); close(server_fd); return EXIT_FAILURE;
@@ -187,7 +202,7 @@ iint main(void) {
         perror("listen"); close(server_fd); return EXIT_FAILURE;
     }
 
-    printf("Gridlock server listening on port %d. Waiting for two players...\n", PORT);
+    printf("Gridlock server listening on port %d. Waiting for two players...\n", port_no);
     int clients[2];
     for (int i = 0; i < 2; i++) {
         clients[i] = accept(server_fd, NULL, NULL);
@@ -201,6 +216,7 @@ iint main(void) {
 
     GameState game;
     init_game(&game); /* Server owns the game state. */
+    generate_obstacles(&game, 20);
     send_all(clients[0], "START:1\nGame started. You are Player 1.\n");
     send_all(clients[1], "START:2\nGame started. You are Player 2.\n");
 
@@ -242,5 +258,4 @@ iint main(void) {
     for (int i = 0; i < 2; i++) close(clients[i]);
     close(server_fd);
     return 0;
-}
 }
