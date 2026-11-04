@@ -16,6 +16,13 @@
 #define CELL_P1 '1'
 #define CELL_P2 '2'
 
+/* Ability costs */
+#define COST_MOVE 0
+#define COST_SPRINT 2
+#define COST_JUMP 3
+#define COST_BOMB 5
+#define MAX_POINTS 8
+
 typedef struct {
     int x, y;
 } Position;
@@ -50,7 +57,7 @@ static int receive_line(int fd, char *buffer, size_t size) {
     while (used + 1 < size) {
         char ch;
         ssize_t n = recv(fd, &ch, 1, 0);
-        if (n == 0) return 0;          /* client disconnected */
+        if (n == 0) return 0;
         if (n < 0) {
             if (errno == EINTR) continue;
             return -1;
@@ -67,7 +74,6 @@ void init_game(GameState *game) {
     memset(game->grid, CELL_EMPTY, sizeof(game->grid));
     game->current_cycle = 1;
 
-    /* Initial player positions */
     game->p1 = (Player){ .pos = {7, 0}, .points = 0, .id = 1 };
     game->p2 = (Player){ .pos = {7, 14}, .points = 1, .id = 2 };
 
@@ -77,13 +83,11 @@ void init_game(GameState *game) {
 
 /* Randomly place a specific number of obstacles on empty cells */
 void generate_obstacles(GameState *game, int num_obstacles) {
-    srand(time(NULL)); 
-    
+    srand(time(NULL));
     int placed = 0;
     while (placed < num_obstacles) {
         int rx = rand() % BOARD_SIZE;
         int ry = rand() % BOARD_SIZE;
-        
         if (game->grid[rx][ry] == CELL_EMPTY) {
             game->grid[rx][ry] = CELL_OBSTACLE;
             placed++;
@@ -94,16 +98,11 @@ void generate_obstacles(GameState *game, int num_obstacles) {
 /* Print the current board state to stdout for debugging */
 void print_board(const GameState *game) {
     printf("\n--- GRIDLOCK (Cycle %d) ---\n  ", game->current_cycle);
-    for (int j = 0; j < BOARD_SIZE; j++) {
-        printf("%d ", j % 10);
-    }
+    for (int j = 0; j < BOARD_SIZE; j++) printf("%d ", j % 10);
     printf("\n");
-
     for (int i = 0; i < BOARD_SIZE; i++) {
         printf("%d ", i % 10);
-        for (int j = 0; j < BOARD_SIZE; j++) {
-            printf("%c ", game->grid[i][j]);
-        }
+        for (int j = 0; j < BOARD_SIZE; j++) printf("%c ", game->grid[i][j]);
         printf("\n");
     }
 }
@@ -114,7 +113,7 @@ bool is_valid_cell(const GameState *game, Position p) {
     return game->grid[p.x][p.y] == CELL_EMPTY;
 }
 
-/* Basic player movement helper (standard move only) */
+/* Basic player movement: Move 1 cell, leaving a wall behind */
 bool move_player(GameState *game, Player *p, char dir) {
     int dx = 0, dy = 0;
     if (dir == 'W' || dir == 'w') dx = -1;
@@ -126,13 +125,83 @@ bool move_player(GameState *game, Player *p, char dir) {
     Position next = { p->pos.x + dx, p->pos.y + dy };
     if (!is_valid_cell(game, next)) return false;
 
-    /* Leave a trail behind */
     game->grid[p->pos.x][p->pos.y] = CELL_WALL;
     p->pos = next;
     game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1 : CELL_P2;
     return true;
 }
-    
+
+/* Sprint: Move 2 cells in one direction, leaving walls on both */
+bool ability_sprint(GameState *game, Player *p, char dir) {
+    if (p->points < COST_SPRINT) return false;
+
+    int dx = 0, dy = 0;
+    if (dir == 'W' || dir == 'w') dx = -1;
+    else if (dir == 'S' || dir == 's') dx = 1;
+    else if (dir == 'A' || dir == 'a') dy = -1;
+    else if (dir == 'D' || dir == 'd') dy = 1;
+    else return false;
+
+    Position step1 = { p->pos.x + dx, p->pos.y + dy };
+    Position step2 = { p->pos.x + 2*dx, p->pos.y + 2*dy };
+
+    if (!is_valid_cell(game, step1) || !is_valid_cell(game, step2)) return false;
+
+    game->grid[p->pos.x][p->pos.y] = CELL_WALL;
+    game->grid[step1.x][step1.y] = CELL_WALL;
+    p->pos = step2;
+    game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1 : CELL_P2;
+    p->points -= COST_SPRINT;
+    return true;
+}
+
+/* Jump: Hop over 1 wall and land on the empty cell beyond it */
+bool ability_jump(GameState *game, Player *p, char dir) {
+    if (p->points < COST_JUMP) return false;
+
+    int dx = 0, dy = 0;
+    if (dir == 'W' || dir == 'w') dx = -1;
+    else if (dir == 'S' || dir == 's') dx = 1;
+    else if (dir == 'A' || dir == 'a') dy = -1;
+    else if (dir == 'D' || dir == 'd') dy = 1;
+    else return false;
+
+    Position mid = { p->pos.x + dx, p->pos.y + dy };
+    Position land = { p->pos.x + 2*dx, p->pos.y + 2*dy };
+
+    /* Can only jump over walls, not obstacles or players */
+    if (mid.x < 0 || mid.x >= BOARD_SIZE || mid.y < 0 || mid.y >= BOARD_SIZE) return false;
+    if (game->grid[mid.x][mid.y] != CELL_WALL) return false;
+    if (!is_valid_cell(game, land)) return false;
+
+    /* Leave wall at starting position, but NOT on the skipped cell */
+    game->grid[p->pos.x][p->pos.y] = CELL_WALL;
+    p->pos = land;
+    game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1 : CELL_P2;
+    p->points -= COST_JUMP;
+    return true;
+}
+
+/* Bomb: Destroys all trail walls in 3x3 area around you (not hazards, not your own cell) */
+bool ability_bomb(GameState *game, Player *p) {
+    if (p->points < COST_BOMB) return false;
+    if (game->current_cycle < 6) return false;
+
+    for (int r = p->pos.x - 1; r <= p->pos.x + 1; r++) {
+        for (int c = p->pos.y - 1; c <= p->pos.y + 1; c++) {
+            if (r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE) {
+                if (r == p->pos.x && c == p->pos.y) continue;
+                if (game->grid[r][c] == CELL_WALL) {
+                    game->grid[r][c] = CELL_EMPTY;
+                }
+            }
+        }
+    }
+    p->points -= COST_BOMB;
+    return true;
+}
+
+/* Build a network-friendly board string for clients */
 static void make_board_message(const GameState *game, char *out, size_t size) {
     size_t used = 0;
     int n = snprintf(out, size,
@@ -165,18 +234,40 @@ static void make_board_message(const GameState *game, char *out, size_t size) {
     }
 }
 
+/* Check if a player has any valid move available */
+static bool has_valid_move(const GameState *game, const Player *p) {
+    const char dirs[] = "WASD";
+
+    /* Try Move and Sprint and Jump (actions needing a direction) */
+    for (int choice = 0; choice <= 2; choice++) {
+        for (int d = 0; d < 4; d++) {
+            GameState copy = *game;
+            Player *cp = (p->id == 1) ? &copy.p1 : &copy.p2;
+            bool ok = false;
+            switch (choice) {
+                case 0: ok = move_player(&copy, cp, dirs[d]); break;
+                case 1: ok = ability_sprint(&copy, cp, dirs[d]); break;
+                case 2: ok = ability_jump(&copy, cp, dirs[d]); break;
+            }
+            if (ok) return true;
+        }
+    }
+
+    /* Try Bomb (no direction) */
+    GameState copy = *game;
+    Player *cp = (p->id == 1) ? &copy.p1 : &copy.p2;
+    if (ability_bomb(&copy, cp)) return true;
+
+    return false;
+}
 
 int main(int argc, char *argv[]) {
-    
-    // Check if port number was provided
     if (argc < 2) {
         printf("Usage: %s port_no\n", argv[0]);
         return EXIT_FAILURE;
     }
 
-    // Get port number from command-line argument
     int port_no = atoi(argv[1]);
-
     if (port_no < 1 || port_no > 65535) {
         printf("Invalid port number.\n");
         return EXIT_FAILURE;
@@ -184,7 +275,6 @@ int main(int argc, char *argv[]) {
 
     signal(SIGPIPE, SIG_IGN);
 
-    /* create, bind, and listen on the TCP server socket. */
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0) { perror("socket"); return EXIT_FAILURE; }
 
@@ -215,7 +305,7 @@ int main(int argc, char *argv[]) {
     }
 
     GameState game;
-    init_game(&game); /* Server owns the game state. */
+    init_game(&game);
     generate_obstacles(&game, 20);
     send_all(clients[0], "START:1\nGame started. You are Player 1.\n");
     send_all(clients[1], "START:2\nGame started. You are Player 2.\n");
@@ -225,14 +315,40 @@ int main(int argc, char *argv[]) {
     char command[128];
     bool running = true;
 
-    /* send board + INPUT prompt, receive command, and update turns. */
     while (running) {
         Player *player = (active == 0) ? &game.p1 : &game.p2;
+        Player *other  = (active == 0) ? &game.p2 : &game.p1;
         make_board_message(&game, board_message, sizeof(board_message));
         send_all(clients[0], board_message);
         send_all(clients[1], board_message);
 
-        send_all(clients[active], "Your turn. Enter: 0 W/A/S/D\nINPUT\n");
+        /* --- Win / draw detection --- */
+        bool current_ok = has_valid_move(&game, player);
+        bool other_ok   = has_valid_move(&game, other);
+
+        if (!current_ok && !other_ok) {
+            send_all(clients[0], "OVER:Both players are trapped. It's a draw!\n");
+            send_all(clients[1], "OVER:Both players are trapped. It's a draw!\n");
+            break;
+        }
+        if (!current_ok) {
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "OVER:Player %d is trapped! Player %d wins!\n",
+                     player->id, other->id);
+            send_all(clients[0], msg);
+            send_all(clients[1], msg);
+            break;
+        }
+
+        char prompt[512];
+        snprintf(prompt, sizeof(prompt),
+            "Your turn (P%d | Points: %d | Cycle: %d)\n"
+            "Actions: [0]Move [1]Sprint(2pt) [2]Jump(3pt) [3]Bomb(5pt,cycle6+)\n"
+            "Format: <action> <dir:W/A/S/D> (Bomb needs no direction: just 3)\n"
+            "INPUT\n",
+            player->id, player->points, game.current_cycle);
+        send_all(clients[active], prompt);
         send_all(clients[1 - active], "WAIT:Opponent's turn...\n");
 
         int received = receive_line(clients[active], command, sizeof(command));
@@ -244,14 +360,42 @@ int main(int argc, char *argv[]) {
 
         int action = -1;
         char direction = '\0';
-        if (sscanf(command, "%d %c", &action, &direction) != 2 || action != 0 ||
-            !move_player(&game, player, direction)) {
-            send_all(clients[active], "Invalid move. Use action 0 and W/A/S/D.\n");
-            continue; /* same player retries */
+        int fields = sscanf(command, "%d %c", &action, &direction);
+
+        bool valid = false;
+        if (fields >= 1) {
+            switch (action) {
+                case 0: /* Move */
+                    valid = move_player(&game, player, direction);
+                    break;
+                case 1: /* Sprint */
+                    valid = ability_sprint(&game, player, direction);
+                    break;
+                case 2: /* Jump */
+                    valid = ability_jump(&game, player, direction);
+                    break;
+                case 3: /* Bomb */
+                    valid = ability_bomb(&game, player);
+                    break;
+            }
+        }
+
+        if (!valid) {
+            send_all(clients[active], "Invalid action. Check cost and format.\n");
+            continue;
         }
 
         active = 1 - active;
-        game.current_cycle++;
+
+        /* A full cycle = both players have moved (P1 then P2).
+         * After P2 acts (active flips back to 0), advance the cycle
+         * and give both players 1 point. */
+        if (active == 0) {
+            game.current_cycle++;
+            if (game.p1.points < MAX_POINTS) game.p1.points++;
+            if (game.p2.points < MAX_POINTS) game.p2.points++;
+        }
+
         print_board(&game);
     }
 
