@@ -117,6 +117,12 @@ int main(int argc, char *argv[]) {
         // Display server message
         printf("%s\n", buffer);
 
+        // Show the board legend once, when the game starts
+        if (strncmp(buffer, "START:", 6) == 0) {
+            printf("Legend: 1 = Player 1, 2 = Player 2, # = trail wall, "
+                   "X = obstacle, . = empty\n");
+        }
+
         // Stop if game is over
         if (strncmp(buffer, "OVER:", 5) == 0) {
             break;
@@ -126,7 +132,7 @@ int main(int argc, char *argv[]) {
         if (strcmp(buffer, "INPUT") == 0) {
             char input[100];
 
-            printf("Enter your move (0 W/A/S/D): ");
+            printf("Enter action (e.g. 0 W = move, 1 D = sprint, 2 A = jump, 3 = bomb): ");
             fflush(stdout);
 
             if (fgets(input, sizeof(input), stdin) == NULL) {
@@ -144,4 +150,3 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
-
