@@ -31,6 +31,7 @@ typedef struct {
     Position pos;
     int points;
     int id;
+    bool derezzed; /* Track if the player crashed */
 } Player;
 
 typedef struct {
@@ -74,8 +75,8 @@ void init_game(GameState *game) {
     memset(game->grid, CELL_EMPTY, sizeof(game->grid));
     game->current_cycle = 1;
 
-    game->p1 = (Player){ .pos = {7, 0}, .points = 0, .id = 1 };
-    game->p2 = (Player){ .pos = {7, 14}, .points = 1, .id = 2 };
+    game->p1 = (Player){ .pos = {7, 0}, .points = 0, .id = 1, .derezzed = false };
+    game->p2 = (Player){ .pos = {7, 14}, .points = 1, .id = 2, .derezzed = false };
 
     game->grid[game->p1.pos.x][game->p1.pos.y] = CELL_P1;
     game->grid[game->p2.pos.x][game->p2.pos.y] = CELL_P2;
@@ -113,8 +114,8 @@ bool is_valid_cell(const GameState *game, Position p) {
     return game->grid[p.x][p.y] == CELL_EMPTY;
 }
 
-/* Basic player movement: Move 1 cell, leaving a wall behind */
-bool move_player(GameState *game, Player *p, char dir) {
+/* Standard movement: Fatal crash if hitting boundary, wall, obstacle, or player */
+bool move_player(GameState *game, Player *p, Player *opponent, char dir) {
     int dx = 0, dy = 0;
     if (dir == 'W' || dir == 'w') dx = -1;
     else if (dir == 'S' || dir == 's') dx = 1;
@@ -123,7 +124,15 @@ bool move_player(GameState *game, Player *p, char dir) {
     else return false;
 
     Position next = { p->pos.x + dx, p->pos.y + dy };
-    if (!is_valid_cell(game, next)) return false;
+
+    /* Fatal Collision Check */
+    if (!is_valid_cell(game, next)) {
+        p->derezzed = true;
+        if (next.x == opponent->pos.x && next.y == opponent->pos.y) {
+            opponent->derezzed = true;
+        }
+        return true;
+    }
 
     game->grid[p->pos.x][p->pos.y] = CELL_WALL;
     p->pos = next;
@@ -131,8 +140,8 @@ bool move_player(GameState *game, Player *p, char dir) {
     return true;
 }
 
-/* Sprint: Move 2 cells in one direction, leaving walls on both */
-bool ability_sprint(GameState *game, Player *p, char dir) {
+/* Sprint: Move 2 cells. Crashes if either step hits a collision */
+bool ability_sprint(GameState *game, Player *p, Player *opponent, char dir) {
     if (p->points < COST_SPRINT) return false;
 
     int dx = 0, dy = 0;
@@ -145,7 +154,22 @@ bool ability_sprint(GameState *game, Player *p, char dir) {
     Position step1 = { p->pos.x + dx, p->pos.y + dy };
     Position step2 = { p->pos.x + 2*dx, p->pos.y + 2*dy };
 
-    if (!is_valid_cell(game, step1) || !is_valid_cell(game, step2)) return false;
+    /* Step 1 collision */
+    if (!is_valid_cell(game, step1)) {
+        p->derezzed = true;
+        if (step1.x == opponent->pos.x && step1.y == opponent->pos.y) opponent->derezzed = true;
+        p->points -= COST_SPRINT;
+        return true;
+    }
+
+    /* Step 2 collision */
+    if (!is_valid_cell(game, step2)) {
+        game->grid[p->pos.x][p->pos.y] = CELL_WALL;
+        p->derezzed = true;
+        if (step2.x == opponent->pos.x && step2.y == opponent->pos.y) opponent->derezzed = true;
+        p->points -= COST_SPRINT;
+        return true;
+    }
 
     game->grid[p->pos.x][p->pos.y] = CELL_WALL;
     game->grid[step1.x][step1.y] = CELL_WALL;
@@ -155,8 +179,8 @@ bool ability_sprint(GameState *game, Player *p, char dir) {
     return true;
 }
 
-/* Jump: Hop over 1 wall and land on the empty cell beyond it */
-bool ability_jump(GameState *game, Player *p, char dir) {
+/* Jump: Hop over 1 wall and land on the cell beyond. Crashes if landing cell is invalid */
+bool ability_jump(GameState *game, Player *p, Player *opponent, char dir) {
     if (p->points < COST_JUMP) return false;
 
     int dx = 0, dy = 0;
@@ -169,12 +193,17 @@ bool ability_jump(GameState *game, Player *p, char dir) {
     Position mid = { p->pos.x + dx, p->pos.y + dy };
     Position land = { p->pos.x + 2*dx, p->pos.y + 2*dy };
 
-    /* Can only jump over walls, not obstacles or players */
-    if (mid.x < 0 || mid.x >= BOARD_SIZE || mid.y < 0 || mid.y >= BOARD_SIZE) return false;
-    if (game->grid[mid.x][mid.y] != CELL_WALL) return false;
-    if (!is_valid_cell(game, land)) return false;
+    if (mid.x < 0 || mid.x >= BOARD_SIZE || mid.y < 0 || mid.y >= BOARD_SIZE || game->grid[mid.x][mid.y] != CELL_WALL) {
+        return false;
+    }
 
-    /* Leave wall at starting position, but NOT on the skipped cell */
+    if (!is_valid_cell(game, land)) {
+        p->derezzed = true;
+        if (land.x == opponent->pos.x && land.y == opponent->pos.y) opponent->derezzed = true;
+        p->points -= COST_JUMP;
+        return true;
+    }
+
     game->grid[p->pos.x][p->pos.y] = CELL_WALL;
     p->pos = land;
     game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1 : CELL_P2;
@@ -182,7 +211,7 @@ bool ability_jump(GameState *game, Player *p, char dir) {
     return true;
 }
 
-/* Bomb: Destroys all trail walls in 3x3 area around you (not hazards, not your own cell) */
+/* Bomb: Destroys all trail walls in 3x3 area around player */
 bool ability_bomb(GameState *game, Player *p) {
     if (p->points < COST_BOMB) return false;
     if (game->current_cycle < 6) return false;
@@ -201,7 +230,7 @@ bool ability_bomb(GameState *game, Player *p) {
     return true;
 }
 
-/* Build a network-friendly board string for clients */
+/* Build network-friendly board string for clients */
 static void make_board_message(const GameState *game, char *out, size_t size) {
     size_t used = 0;
     int n = snprintf(out, size,
@@ -234,26 +263,25 @@ static void make_board_message(const GameState *game, char *out, size_t size) {
     }
 }
 
-/* Check if a player has any valid move available */
-static bool has_valid_move(const GameState *game, const Player *p) {
+/* Check if player has any safe non-crashing move */
+static bool has_safe_move(const GameState *game, const Player *p) {
     const char dirs[] = "WASD";
 
-    /* Try Move and Sprint and Jump (actions needing a direction) */
     for (int choice = 0; choice <= 2; choice++) {
         for (int d = 0; d < 4; d++) {
             GameState copy = *game;
             Player *cp = (p->id == 1) ? &copy.p1 : &copy.p2;
+            Player *co = (p->id == 1) ? &copy.p2 : &copy.p1;
             bool ok = false;
             switch (choice) {
-                case 0: ok = move_player(&copy, cp, dirs[d]); break;
-                case 1: ok = ability_sprint(&copy, cp, dirs[d]); break;
-                case 2: ok = ability_jump(&copy, cp, dirs[d]); break;
+                case 0: ok = move_player(&copy, cp, co, dirs[d]); break;
+                case 1: ok = ability_sprint(&copy, cp, co, dirs[d]); break;
+                case 2: ok = ability_jump(&copy, cp, co, dirs[d]); break;
             }
-            if (ok) return true;
+            if (ok && !cp->derezzed) return true;
         }
     }
 
-    /* Try Bomb (no direction) */
     GameState copy = *game;
     Player *cp = (p->id == 1) ? &copy.p1 : &copy.p2;
     if (ability_bomb(&copy, cp)) return true;
@@ -318,27 +346,13 @@ int main(int argc, char *argv[]) {
     while (running) {
         Player *player = (active == 0) ? &game.p1 : &game.p2;
         Player *other  = (active == 0) ? &game.p2 : &game.p1;
+
         make_board_message(&game, board_message, sizeof(board_message));
         send_all(clients[0], board_message);
         send_all(clients[1], board_message);
 
-        /* --- Win / draw detection --- */
-        bool current_ok = has_valid_move(&game, player);
-        bool other_ok   = has_valid_move(&game, other);
-
-        if (!current_ok && !other_ok) {
-            send_all(clients[0], "OVER:Both players are trapped. It's a draw!\n");
-            send_all(clients[1], "OVER:Both players are trapped. It's a draw!\n");
-            break;
-        }
-        if (!current_ok) {
-            char msg[128];
-            snprintf(msg, sizeof(msg),
-                     "OVER:Player %d is trapped! Player %d wins!\n",
-                     player->id, other->id);
-            send_all(clients[0], msg);
-            send_all(clients[1], msg);
-            break;
+        if (!has_safe_move(&game, player)) {
+            send_all(clients[active], "WARNING: You are completely trapped! Any move will derez you.\n");
         }
 
         char prompt[512];
@@ -366,13 +380,13 @@ int main(int argc, char *argv[]) {
         if (fields >= 1) {
             switch (action) {
                 case 0: /* Move */
-                    valid = move_player(&game, player, direction);
+                    valid = move_player(&game, player, other, direction);
                     break;
                 case 1: /* Sprint */
-                    valid = ability_sprint(&game, player, direction);
+                    valid = ability_sprint(&game, player, other, direction);
                     break;
                 case 2: /* Jump */
-                    valid = ability_jump(&game, player, direction);
+                    valid = ability_jump(&game, player, other, direction);
                     break;
                 case 3: /* Bomb */
                     valid = ability_bomb(&game, player);
@@ -381,15 +395,28 @@ int main(int argc, char *argv[]) {
         }
 
         if (!valid) {
-            send_all(clients[active], "Invalid action. Check cost and format.\n");
+            send_all(clients[active], "Invalid action or format. Check point cost.\n");
             continue;
+        }
+
+        /* Win/Draw/Derez state evaluation */
+        if (player->derezzed && other->derezzed) {
+            send_all(clients[0], "OVER:Head-on collision! Both players derezzed. It's a draw!\n");
+            send_all(clients[1], "OVER:Head-on collision! Both players derezzed. It's a draw!\n");
+            break;
+        }
+        if (player->derezzed) {
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "OVER:Player %d crashed! Player %d wins!\n",
+                     player->id, other->id);
+            send_all(clients[0], msg);
+            send_all(clients[1], msg);
+            break;
         }
 
         active = 1 - active;
 
-        /* A full cycle = both players have moved (P1 then P2).
-         * After P2 acts (active flips back to 0), advance the cycle
-         * and give both players 1 point. */
         if (active == 0) {
             game.current_cycle++;
             if (game.p1.points < MAX_POINTS) game.p1.points++;
