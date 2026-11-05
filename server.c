@@ -15,6 +15,7 @@
 #define CELL_OBSTACLE 'X'
 #define CELL_P1 '1'
 #define CELL_P2 '2'
+#define CELL_MYSTERY '?'
 
 /* Ability costs */
 #define COST_MOVE 0
@@ -22,6 +23,18 @@
 #define COST_JUMP 3
 #define COST_BOMB 5
 #define MAX_POINTS 8
+
+/* Mystery Blocks: a new one spawns every MYSTERY_INTERVAL cycles.
+ * The free ability numbers match the action numbers (1 Sprint, 2 Jump, 3 Bomb). */
+#define MYSTERY_INTERVAL 3
+#define FREE_NONE 0
+#define FREE_SPRINT 1
+#define FREE_JUMP 2
+#define FREE_BOMB 3
+#define REWARD_NONE 0
+#define REWARD_POINTS 1
+#define REWARD_FREE 2
+#define REWARD_LOST 3
 
 typedef struct {
     int x, y;
@@ -31,6 +44,8 @@ typedef struct {
     Position pos;
     int points;
     int id;
+    int free_ability;   /* the one free ability held (FREE_*), used before paying points */
+    int last_reward;    /* last Mystery Block result (REWARD_*), reported then reset by main */
 } Player;
 
 typedef struct {
@@ -116,10 +131,52 @@ void print_board(const GameState *game) {
     }
 }
 
-/* Check if a cell is within bounds and unoccupied */
+/* Check if a cell is within bounds and unoccupied (Mystery Blocks can be stepped on) */
 bool is_valid_cell(const GameState *game, Position p) {
     if (p.x < 0 || p.x >= BOARD_SIZE || p.y < 0 || p.y >= BOARD_SIZE) return false;
-    return game->grid[p.x][p.y] == CELL_EMPTY;
+    return game->grid[p.x][p.y] == CELL_EMPTY || game->grid[p.x][p.y] == CELL_MYSTERY;
+}
+
+/* Spawn one Mystery Block on a random empty cell (gives up if the board is crowded) */
+void spawn_mystery_block(GameState *game) {
+    for (int tries = 0; tries < 100; tries++) {
+        int rx = rand() % BOARD_SIZE;
+        int ry = rand() % BOARD_SIZE;
+        if (game->grid[rx][ry] == CELL_EMPTY) {
+            game->grid[rx][ry] = CELL_MYSTERY;
+            return;
+        }
+    }
+}
+
+/* If the player lands on a Mystery Block, give a random reward: +2 points,
+ * or a free Sprint/Jump/Bomb. Only 1 free ability can be held at a time, so
+ * a free ability found while holding one is lost. Call this BEFORE the cell
+ * is overwritten with the player's mark. */
+static void collect_mystery(GameState *game, Player *p, Position pos) {
+    if (game->grid[pos.x][pos.y] != CELL_MYSTERY) return;
+
+    int roll = rand() % 4;                  /* 0 = points, 1-3 = free ability */
+    if (roll == 0) {
+        p->points += 2;
+        if (p->points > MAX_POINTS) p->points = MAX_POINTS;
+        p->last_reward = REWARD_POINTS;
+    } else if (p->free_ability != FREE_NONE) {
+        p->last_reward = REWARD_LOST;
+    } else {
+        p->free_ability = roll;             /* roll matches FREE_SPRINT/JUMP/BOMB */
+        p->last_reward = REWARD_FREE;
+    }
+}
+
+/* Name of a free ability, for messages */
+static const char *free_ability_name(int ability) {
+    switch (ability) {
+        case FREE_SPRINT: return "Sprint";
+        case FREE_JUMP:   return "Jump";
+        case FREE_BOMB:   return "Bomb";
+        default:          return "none";
+    }
 }
 
 /* Basic player movement: Move 1 cell, leaving a wall behind */
@@ -134,6 +191,7 @@ bool move_player(GameState *game, Player *p, char dir) {
     Position next = { p->pos.x + dx, p->pos.y + dy };
     if (!is_valid_cell(game, next)) return false;
 
+    collect_mystery(game, p, next);
     game->grid[p->pos.x][p->pos.y] = CELL_WALL;
     p->pos = next;
     game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1 : CELL_P2;
@@ -142,7 +200,8 @@ bool move_player(GameState *game, Player *p, char dir) {
 
 /* Sprint: Move 2 cells in one direction, leaving walls on both */
 bool ability_sprint(GameState *game, Player *p, char dir) {
-    if (p->points < COST_SPRINT) return false;
+    bool free_use = (p->free_ability == FREE_SPRINT);   /* held free Sprint is used first */
+    if (!free_use && p->points < COST_SPRINT) return false;
 
     int dx = 0, dy = 0;
     if (dir == 'W' || dir == 'w') dx = -1;
@@ -158,15 +217,18 @@ bool ability_sprint(GameState *game, Player *p, char dir) {
 
     game->grid[p->pos.x][p->pos.y] = CELL_WALL;
     game->grid[step1.x][step1.y] = CELL_WALL;
+    if (free_use) p->free_ability = FREE_NONE;
+    else p->points -= COST_SPRINT;
+    collect_mystery(game, p, step2);    /* only the landing cell counts */
     p->pos = step2;
     game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1 : CELL_P2;
-    p->points -= COST_SPRINT;
     return true;
 }
 
 /* Jump: Hop over 1 wall and land on the empty cell beyond it */
 bool ability_jump(GameState *game, Player *p, char dir) {
-    if (p->points < COST_JUMP) return false;
+    bool free_use = (p->free_ability == FREE_JUMP);     /* held free Jump is used first */
+    if (!free_use && p->points < COST_JUMP) return false;
 
     int dx = 0, dy = 0;
     if (dir == 'W' || dir == 'w') dx = -1;
@@ -185,15 +247,18 @@ bool ability_jump(GameState *game, Player *p, char dir) {
 
     /* Leave wall at starting position, but NOT on the skipped cell */
     game->grid[p->pos.x][p->pos.y] = CELL_WALL;
+    if (free_use) p->free_ability = FREE_NONE;
+    else p->points -= COST_JUMP;
+    collect_mystery(game, p, land);
     p->pos = land;
     game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1 : CELL_P2;
-    p->points -= COST_JUMP;
     return true;
 }
 
 /* Bomb: Destroys all trail walls in 3x3 area around you (not hazards, not your own cell) */
 bool ability_bomb(GameState *game, Player *p) {
-    if (p->points < COST_BOMB) return false;
+    bool free_use = (p->free_ability == FREE_BOMB);     /* held free Bomb is used first */
+    if (!free_use && p->points < COST_BOMB) return false;
     if (game->current_cycle < 6) return false;
 
     for (int r = p->pos.x - 1; r <= p->pos.x + 1; r++) {
@@ -206,7 +271,8 @@ bool ability_bomb(GameState *game, Player *p) {
             }
         }
     }
-    p->points -= COST_BOMB;
+    if (free_use) p->free_ability = FREE_NONE;
+    else p->points -= COST_BOMB;
     return true;
 }
 
@@ -352,11 +418,12 @@ int main(int argc, char *argv[]) {
 
         char prompt[512];
         snprintf(prompt, sizeof(prompt),
-            "Your turn (P%d | Points: %d | Cycle: %d)\n"
+            "Your turn (P%d | Points: %d | Free ability: %s | Cycle: %d)\n"
             "Actions: [0]Move [1]Sprint(2pt) [2]Jump(3pt) [3]Bomb(5pt,cycle6+)\n"
             "Format: <action> <dir:W/A/S/D> (Bomb needs no direction: just 3)\n"
             "INPUT\n",
-            player->id, player->points, game.current_cycle);
+            player->id, player->points, free_ability_name(player->free_ability),
+            game.current_cycle);
         send_all(clients[active], prompt);
         send_all(clients[1 - active], "WAIT:Opponent's turn...\n");
 
@@ -394,6 +461,22 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
+        /* Tell the player what a Mystery Block gave them (if they stepped on one) */
+        if (player->last_reward != REWARD_NONE) {
+            char reward_msg[160];
+            if (player->last_reward == REWARD_POINTS)
+                snprintf(reward_msg, sizeof(reward_msg), "Mystery Block: +2 points!\n");
+            else if (player->last_reward == REWARD_FREE)
+                snprintf(reward_msg, sizeof(reward_msg),
+                         "Mystery Block: a free %s! It is used automatically with that action.\n",
+                         free_ability_name(player->free_ability));
+            else
+                snprintf(reward_msg, sizeof(reward_msg),
+                         "Mystery Block: you already hold a free ability, so this reward was lost.\n");
+            send_all(clients[active], reward_msg);
+            player->last_reward = REWARD_NONE;
+        }
+
         active = 1 - active;
 
         /* A full cycle = both players have moved (P1 then P2).
@@ -403,6 +486,7 @@ int main(int argc, char *argv[]) {
             game.current_cycle++;
             if (game.p1.points < MAX_POINTS) game.p1.points++;
             if (game.p2.points < MAX_POINTS) game.p2.points++;
+            if (game.current_cycle % MYSTERY_INTERVAL == 0) spawn_mystery_block(&game);
         }
 
         print_board(&game);
