@@ -18,7 +18,7 @@
 
 /* Mystery Blocks and Shrinking */
 #define MYSTERY_INTERVAL 3
-#define SHRINK_INTERVAL 10   /* Map shrinks every 10 cycles */
+#define SHRINK_INTERVAL 6   
 
 #define FREE_NONE 0
 #define FREE_SPRINT 1

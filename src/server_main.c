@@ -3,12 +3,32 @@
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
+#include <time.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include "game_logic.h"
 #include "network.h"
 
+static void send_board_to_client(int fd, const GameState *game) {
+    char board_buf[2048];
+    int len = snprintf(board_buf, sizeof(board_buf), "\n--- GRIDLOCK (Cycle %d) ---\n  ", game->current_cycle);
+    for (int j = 0; j < BOARD_SIZE; j++) {
+        len += snprintf(board_buf + len, sizeof(board_buf) - len, "%d ", j % 10);
+    }
+    len += snprintf(board_buf + len, sizeof(board_buf) - len, "\n");
+    for (int i = 0; i < BOARD_SIZE; i++) {
+        len += snprintf(board_buf + len, sizeof(board_buf) - len, "%d ", i % 10);
+        for (int j = 0; j < BOARD_SIZE; j++) {
+            len += snprintf(board_buf + len, sizeof(board_buf) - len, "%c ", game->grid[i][j]);
+        }
+        len += snprintf(board_buf + len, sizeof(board_buf) - len, "\n");
+    }
+    send_all(fd, board_buf);
+}
+
 int main(int argc, char *argv[]) {
+    srand((unsigned int)time(NULL));
+
     if (argc < 2) {
         printf("Usage: %s port_no\n", argv[0]);
         return 1;
@@ -50,7 +70,18 @@ int main(int argc, char *argv[]) {
         while (1) {
             Player *player = (active == 0) ? &game.p1 : &game.p2;
             Player *other = (active == 0) ? &game.p2 : &game.p1;
+            int waiting = 1 - active;
 
+            /* Render board layout to BOTH players */
+            send_board_to_client(clients[0], &game);
+            send_board_to_client(clients[1], &game);
+
+            /* Inform the inactive player to wait */
+            char wait_msg[64];
+            snprintf(wait_msg, sizeof(wait_msg), "WAIT:Waiting for Player %d to move...\n", player->id);
+            send_all(clients[waiting], wait_msg);
+
+            /* Request move input from the active player */
             char state[1024];
             snprintf(state, sizeof(state), "STATE:Cycle %d | Your Points: %d | Free: %s | Pos: (%d,%d)\n", 
                      game.current_cycle, player->points, free_ability_name(player->free_ability), player->pos.x, player->pos.y);
