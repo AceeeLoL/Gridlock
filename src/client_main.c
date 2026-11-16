@@ -41,6 +41,14 @@ int main(int argc, char *argv[]) {
             printf("Server disconnected.\n");
             break;
         }
+        if (strncmp(buffer, "RESTART_PROMPT:", 15) == 0) {
+            char input[100];
+            printf("%s\n", buffer + 15);
+            fflush(stdout);
+            if (fgets(input, sizeof(input), stdin) == NULL) break;
+            send(client_socket, input, strlen(input), 0);
+            continue;
+        }
         printf("%s\n", buffer);
         if (strncmp(buffer, "START:", 6) == 0) {
             printf("Legend: 1 = Player 1, 2 = Player 2, # = trail wall, X = obstacle, ? = mystery block, . = empty\n");

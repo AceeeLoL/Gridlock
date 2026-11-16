@@ -164,26 +164,29 @@ int ability_bomb(GameState *game, Player *p) {
     return 1;
 }
 
-void shrink_board(GameState *game, int client1, int client2) {
+ShrinkResult shrink_board(GameState *game, int client1, int client2) {
     int offset = (game->current_cycle / SHRINK_INTERVAL) - 1;
-    if (offset < 0 || offset >= BOARD_SIZE / 2) return;
+    if (offset < 0 || offset >= BOARD_SIZE / 2) return SHRINK_NO_DEATH;
 
     char msg[64];
     snprintf(msg, sizeof(msg), "CAUTION: Ring %d of the arena is shrinking!\n", offset + 1);
     send_all(client1, msg);
     send_all(client2, msg);
 
+    int player1_died = 0;
+    int player2_died = 0;
     for (int i = offset; i < BOARD_SIZE - offset; i++) {
         for (int j = offset; j < BOARD_SIZE - offset; j++) {
             /* If cell is on the perimeter of the current active layer */
             if (i == offset || i == BOARD_SIZE - 1 - offset || j == offset || j == BOARD_SIZE - 1 - offset) {
-                if (game->grid[i][j] == CELL_P1 || game->grid[i][j] == CELL_P2) {
-                    char kill_msg[] = "OVER:You were crushed by the shrinking arena!\n";
-                    send_all(client1, kill_msg);
-                    send_all(client2, kill_msg);
-                }
+                if (game->grid[i][j] == CELL_P1) player1_died = 1;
+                if (game->grid[i][j] == CELL_P2) player2_died = 1;
                 game->grid[i][j] = CELL_OBSTACLE;
             }
         }
     }
+    if (player1_died && player2_died) return SHRINK_BOTH_DIED;
+    if (player1_died) return SHRINK_PLAYER_1_DIED;
+    if (player2_died) return SHRINK_PLAYER_2_DIED;
+    return SHRINK_NO_DEATH;
 }

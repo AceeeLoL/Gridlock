@@ -2,6 +2,7 @@
 #define CONSTANTS_H
 
 #define BOARD_SIZE 15
+#define MAX_ROUNDS 3
 #define CELL_EMPTY '.'
 #define CELL_WALL '#'
 #define CELL_OBSTACLE 'X'
