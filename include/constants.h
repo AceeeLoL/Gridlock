@@ -5,6 +5,9 @@
 #define MAX_ROUNDS 3
 #define CELL_EMPTY '.'
 #define CELL_WALL '#'
+/* Internal trail markers preserve ownership while clients display both as '#'. */
+#define CELL_P1_TRAIL 'a'
+#define CELL_P2_TRAIL 'b'
 #define CELL_OBSTACLE 'X'
 #define CELL_P1 '1'
 #define CELL_P2 '2'

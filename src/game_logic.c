@@ -33,12 +33,22 @@ void generate_obstacles(GameState *game, int num_obstacles) {
 }
 
 void print_board(const GameState *game) {
-    printf("\n--- GRIDLOCK (Cycle %d) ---\n  ", game->current_cycle);
-    for (int j = 0; j < BOARD_SIZE; j++) printf("%d ", j % 10);
-    printf("\n");
+    printf("\n\033[1m--- GRIDLOCK (Cycle %d) ---\033[0m\n  ", game->current_cycle);
+    for (int j = 0; j < BOARD_SIZE; j++) printf("\033[37m%d ", j % 10);
+    printf("\033[0m\n");
     for (int i = 0; i < BOARD_SIZE; i++) {
-        printf("%d ", i % 10);
-        for (int j = 0; j < BOARD_SIZE; j++) printf("%c ", game->grid[i][j]);
+        printf("\033[37m%d ", i % 10);
+        for (int j = 0; j < BOARD_SIZE; j++) {
+            char cell = game->grid[i][j];
+            const char *color = "\033[0m";
+            if (cell == CELL_P1) color = "\033[34m";
+            else if (cell == CELL_P2) color = "\033[33m";
+            else if (cell == CELL_OBSTACLE) color = "\033[31m";
+            else if (cell == CELL_MYSTERY) color = "\033[35m";
+            else if (cell == CELL_P1_TRAIL) color = "\033[34m";
+            else if (cell == CELL_P2_TRAIL) color = "\033[33m";
+            printf("%s%c \033[0m", color, (cell == CELL_P1_TRAIL || cell == CELL_P2_TRAIL) ? CELL_WALL : cell);
+        }
         printf("\n");
     }
 }
@@ -95,7 +105,7 @@ int move_player(GameState *game, Player *p, char dir) {
     Position next = { p->pos.x + dx, p->pos.y + dy };
     if (!is_valid_cell(game, next)) return -1; 
     collect_mystery(game, p, next);
-    game->grid[p->pos.x][p->pos.y] = CELL_WALL;
+    game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1_TRAIL : CELL_P2_TRAIL;
     p->pos = next;
     game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1 : CELL_P2;
     return 1;
@@ -113,8 +123,8 @@ int ability_sprint(GameState *game, Player *p, char dir) {
     Position step1 = { p->pos.x + dx, p->pos.y + dy };
     Position step2 = { p->pos.x + 2*dx, p->pos.y + 2*dy };
     if (!is_valid_cell(game, step1) || !is_valid_cell(game, step2)) return -1; 
-    game->grid[p->pos.x][p->pos.y] = CELL_WALL;
-    game->grid[step1.x][step1.y] = CELL_WALL;
+    game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1_TRAIL : CELL_P2_TRAIL;
+    game->grid[step1.x][step1.y] = (p->id == 1) ? CELL_P1_TRAIL : CELL_P2_TRAIL;
     if (free_use) p->free_ability = FREE_NONE;
     else p->points -= COST_SPRINT;
     collect_mystery(game, p, step2);
@@ -136,7 +146,7 @@ int ability_jump(GameState *game, Player *p, char dir) {
     Position land = { p->pos.x + 2*dx, p->pos.y + 2*dy };
     if (land.x < 0 || land.x >= BOARD_SIZE || land.y < 0 || land.y >= BOARD_SIZE) return -1;
     if (game->grid[land.x][land.y] != CELL_EMPTY && game->grid[land.x][land.y] != CELL_MYSTERY) return -1;
-    game->grid[p->pos.x][p->pos.y] = CELL_WALL;
+    game->grid[p->pos.x][p->pos.y] = (p->id == 1) ? CELL_P1_TRAIL : CELL_P2_TRAIL;
     if (free_use) p->free_ability = FREE_NONE;
     else p->points -= COST_JUMP;
     collect_mystery(game, p, land);
@@ -153,7 +163,8 @@ int ability_bomb(GameState *game, Player *p) {
             int nx = p->pos.x + i;
             int ny = p->pos.y + j;
             if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
-                if (game->grid[nx][ny] == CELL_WALL || game->grid[nx][ny] == CELL_OBSTACLE) {
+                if (game->grid[nx][ny] == CELL_WALL || game->grid[nx][ny] == CELL_P1_TRAIL ||
+                    game->grid[nx][ny] == CELL_P2_TRAIL || game->grid[nx][ny] == CELL_OBSTACLE) {
                     game->grid[nx][ny] = CELL_EMPTY;
                 }
             }
